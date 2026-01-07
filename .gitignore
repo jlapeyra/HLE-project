@@ -1,2 +1,4 @@
 Universal-Dictionary-of-Concepts/
---data/
+data/
+*.pt
+*.pyc

@@ -1,14 +1,19 @@
+import os
 import re
 import random
 import math
 from collections import Counter
 from dataclasses import dataclass
 from typing import List, Tuple
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tqdm import tqdm
+import torch.distributed as dist
+from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 # -------------------------
 # 1) Dades i preprocessat
@@ -19,17 +24,17 @@ def normalize(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
-with open("data/europarl.ca.txt", encoding="utf-8") as f:
+with open("data/europarl.en-ca.ca", encoding="utf-8") as f:
     DATA_CA = f.readlines()
-with open("data/europarl.es.txt", encoding="utf-8") as f:
-    DATA_ES = f.readlines()
+with open("data/europarl.en-ca.en", encoding="utf-8") as f:
+    DATA_EN = f.readlines()
 
 #pairs: List[Tuple[str, str]] = []
-
-DATA = list(zip(DATA_CA, DATA_ES))
-N = len(DATA)
-DATA = DATA[:int(0.7*N)]
-pairs = [(normalize(a), normalize(b)) for a, b in tqdm(DATA)]
+if __name__ == "__main__":
+    DATA = list(zip(DATA_CA, DATA_EN))
+    DATA = DATA[:len(DATA)//2]
+    print("Preprocessing...")
+    pairs = [(normalize(a), normalize(b)) for a, b in tqdm(DATA)]
 
 # -------------------------
 # 2) Vocabulari
@@ -52,11 +57,12 @@ def build_vocab(sentences: List[str], min_freq: int = 1) -> Vocab:
     stoi = {w: i for i, w in enumerate(itos)}
     return Vocab(stoi=stoi, itos=itos)
 
-src_sentences = [a for a, _ in pairs]
-tgt_sentences = [b for _, b in pairs]
-src_vocab = build_vocab(src_sentences, min_freq=1)
-tgt_vocab = build_vocab(tgt_sentences, min_freq=1)
-
+if __name__ == "__main__":
+    src_sentences = [a for a, _ in pairs]
+    tgt_sentences = [b for _, b in pairs]
+    src_vocab = build_vocab(src_sentences, min_freq=1)
+    tgt_vocab = build_vocab(tgt_sentences, min_freq=1)
+    
 def encode(sentence: str, vocab: Vocab, max_len: int) -> List[int]:
     ids = [vocab.stoi.get(w, vocab.stoi[UNK]) for w in sentence.split()]
     ids = [vocab.stoi[SOS]] + ids + [vocab.stoi[EOS]]
@@ -78,16 +84,17 @@ def decode(ids: List[int], vocab: Vocab) -> str:
         words.append(w)
     return " ".join(words)
 
-# Longituds màximes (fes-les més grans amb dades reals)
-MAX_SRC_LEN = 30
-MAX_TGT_LEN = 30
+if __name__ == "__main__":
+    # Longituds màximes (fes-les més grans amb dades reals)
+    MAX_SRC_LEN = 35
+    MAX_TGT_LEN = 35
 
-data = []
-for src, tgt in pairs:
-    data.append((
-        torch.tensor(encode(src, src_vocab, MAX_SRC_LEN), dtype=torch.long),
-        torch.tensor(encode(tgt, tgt_vocab, MAX_TGT_LEN), dtype=torch.long),
-    ))
+    data = []
+    for src, tgt in pairs:
+        data.append((
+            torch.tensor(encode(src, src_vocab, MAX_SRC_LEN), dtype=torch.long),
+            torch.tensor(encode(tgt, tgt_vocab, MAX_TGT_LEN), dtype=torch.long),
+        ))
 
 # -------------------------
 # 3) Model: Encoder, Attention, Decoder
@@ -160,31 +167,32 @@ class Seq2Seq(nn.Module):
 # -------------------------
 # 4) Entrenament
 # -------------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("Device:", device)
+if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Device:", device)
 
-SRC_PAD = src_vocab.stoi[PAD]
-TGT_PAD = tgt_vocab.stoi[PAD]
+    SRC_PAD = src_vocab.stoi[PAD]
+    TGT_PAD = tgt_vocab.stoi[PAD]
 
-emb_dim = 128
-hid_dim = 256
+    emb_dim = 128
+    hid_dim = 256
 
-enc = Encoder(len(src_vocab.itos), emb_dim, hid_dim, SRC_PAD)
-dec = Decoder(len(tgt_vocab.itos), emb_dim, hid_dim, TGT_PAD)
-model = Seq2Seq(enc, dec, SRC_PAD, device).to(device)
+    enc = Encoder(len(src_vocab.itos), emb_dim, hid_dim, SRC_PAD)
+    dec = Decoder(len(tgt_vocab.itos), emb_dim, hid_dim, TGT_PAD)
+    model = Seq2Seq(enc, dec, SRC_PAD, device).to(device)
 
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-criterion = nn.CrossEntropyLoss(ignore_index=TGT_PAD)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.CrossEntropyLoss(ignore_index=TGT_PAD)
 
 def batchify(data, batch_size):
     random.shuffle(data)
     for i in range(0, len(data), batch_size):
         yield data[i:i+batch_size]
 
-def train_epoch(batch_size=4):
+def train_epoch(batch_size=80):
     model.train()
     total_loss = 0.0
-    for batch in batchify(data, batch_size):
+    for batch in tqdm(batchify(data, batch_size), total=math.ceil(len(data)/batch_size)):
         src = torch.stack([x[0] for x in batch]).to(device)
         tgt = torch.stack([x[1] for x in batch]).to(device)
 
@@ -199,22 +207,23 @@ def train_epoch(batch_size=4):
         total_loss += loss.item()
     return total_loss / max(1, math.ceil(len(data)/batch_size))
 
-for epoch in tqdm(range(1, 201)):
-    loss = train_epoch(batch_size=4)
-    if epoch % 20 == 0:
+if __name__ == "__main__":
+    EPOCHS = 20
+    for epoch in range(1, 1+EPOCHS):
+        loss = train_epoch()
         print(f"Epoch {epoch:03d} | loss={loss:.4f}")
 
-checkpoint = {
-    "model_state": model.state_dict(),
-    "optimizer_state": optimizer.state_dict(),
-    "src_vocab": src_vocab,
-    "tgt_vocab": tgt_vocab,
-    "emb_dim": emb_dim,
-    "hid_dim": hid_dim,
-    "MAX_SRC_LEN": MAX_SRC_LEN,
-    "MAX_TGT_LEN": MAX_TGT_LEN,
-}
+        checkpoint = {
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "src_vocab": src_vocab,
+            "tgt_vocab": tgt_vocab,
+            "emb_dim": emb_dim,
+            "hid_dim": hid_dim,
+            "MAX_SRC_LEN": MAX_SRC_LEN,
+            "MAX_TGT_LEN": MAX_TGT_LEN,
+        }
 
-torch.save(checkpoint, "translator_seq2seq.pt")
-print("Model guardat!")
+        torch.save(checkpoint, "translator_seq2seq_v2.pt")
+        print("Model guardat!")
 
