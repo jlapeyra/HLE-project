@@ -1,8 +1,6 @@
 import os
 import torch
 from typing import Any
-import sacrebleu
-from nltk.translate.bleu_score import corpus_bleu
 from tqdm import tqdm
 
 # Reuse definitions from the training module to avoid duplication.
@@ -111,16 +109,17 @@ if __name__ == "__main__":
     # for s in examples:
     #     print(f"{s} -> {translate(s, model, src_vocab, tgt_vocab, MAX_SRC_LEN, MAX_TGT_LEN, device)}")
     
-    #while True:
-    #    print(translate(input("Escriu una frase en català: "), model, src_vocab, tgt_vocab, MAX_SRC_LEN, MAX_TGT_LEN, device))
+    while True:
+        print(translate(input("Escriu una frase en català: "), model, src_vocab, tgt_vocab, MAX_SRC_LEN, MAX_TGT_LEN, device))
 
-def compute_bleu_final_20(
+def compute_bleu(
     ckpt_path: str | None = None,
     src_file: str = "data/europarl.en-ca.ca",
     tgt_file: str = "data/europarl.en-ca.en",
     fraction: float = 0.2,
     max_examples: int | None = None,
 ):
+    import sacrebleu
     """
     Load checkpoint (if ckpt_path is None uses default), take the final `fraction` of the
     parallel files (src_file / tgt_file) and compute corpus BLEU on model translations.
@@ -161,22 +160,8 @@ def compute_bleu_final_20(
         hyp = translate(s, model, src_vocab, tgt_vocab, MAX_SRC_LEN, MAX_TGT_LEN, device)
         hyps.append(hyp)
 
-    # Try sacrebleu first, fallback to NLTK corpus_bleu
-    try:
+    bleu = sacrebleu.corpus_bleu(hyps, [tgt_test])
+    print(f"sacreBLEU = {bleu.score:.2f}")
+    return float(bleu.score), len(hyps)
 
-        bleu = sacrebleu.corpus_bleu(hyps, [tgt_test])
-        print(f"sacreBLEU = {bleu.score:.2f}")
-        return float(bleu.score), len(hyps)
-    except Exception:
-        try:
-
-            # nltk expects: list_of_references: List[List[List[str]]], hypotheses: List[List[str]]
-            list_of_references = [[ref.split()] for ref in tgt_test]
-            hypotheses = [h.split() for h in hyps]
-            score = corpus_bleu(list_of_references, hypotheses) * 100.0
-            print(f"NLTK BLEU = {score:.2f}")
-            return float(score), len(hyps)
-        except Exception as exc:
-            print("Could not compute BLEU: install sacrebleu or nltk:", exc)
-            return None, len(hyps)
-compute_bleu_final_20(fraction=0.1, max_examples=500)
+compute_bleu(fraction=0.1, max_examples=500)
