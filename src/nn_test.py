@@ -1,6 +1,9 @@
 import os
 import torch
 from typing import Any
+import sacrebleu
+from nltk.translate.bleu_score import corpus_bleu
+from tqdm import tqdm
 
 # Reuse definitions from the training module to avoid duplication.
 from nn_train import Encoder, Decoder, Seq2Seq, Vocab, normalize, encode  # type: ignore
@@ -93,17 +96,87 @@ if __name__ == "__main__":
     MAX_SRC_LEN = info["MAX_SRC_LEN"]
     MAX_TGT_LEN = info["MAX_TGT_LEN"]
 
-    examples = [
-        "El Parlament Europeu ha aprovat la llei.",
-        "Necessito ajuda amb el meu equipament informàtic.",
-        "Quin temps farà demà a Barcelona?",
-        "M'agrada escoltar música clàssica mentre treballo.",
-        "On és la biblioteca més propera?",
-        "Podries recomanar-me un bon restaurant per sopar?",
-        "Estic aprenent a programar en Python.",
-        "La intel·ligència artificial està transformant moltes indústries.",
-        "Quines són les últimes notícies sobre tecnologia?",
-        "M'agradaria reservar una habitació d'hotel per a dues persones.",
-    ]
-    for s in examples:
-        print(f"{s} -> {translate(s, model, src_vocab, tgt_vocab, MAX_SRC_LEN, MAX_TGT_LEN, device)}")
+    # examples = [
+    #     "El Parlament Europeu ha aprovat la llei.",
+    #     "Necessito ajuda amb el meu equipament informàtic.",
+    #     "Quin temps farà demà a Barcelona?",
+    #     "M'agrada escoltar música clàssica mentre treballo.",
+    #     "On és la biblioteca més propera?",
+    #     "Podries recomanar-me un bon restaurant per sopar?",
+    #     "Estic aprenent a programar en Python.",
+    #     "La intel·ligència artificial està transformant moltes indústries.",
+    #     "Quines són les últimes notícies sobre tecnologia?",
+    #     "M'agradaria reservar una habitació d'hotel per a dues persones.",
+    # ]
+    # for s in examples:
+    #     print(f"{s} -> {translate(s, model, src_vocab, tgt_vocab, MAX_SRC_LEN, MAX_TGT_LEN, device)}")
+    
+    #while True:
+    #    print(translate(input("Escriu una frase en català: "), model, src_vocab, tgt_vocab, MAX_SRC_LEN, MAX_TGT_LEN, device))
+
+def compute_bleu_final_20(
+    ckpt_path: str | None = None,
+    src_file: str = "data/europarl.en-ca.ca",
+    tgt_file: str = "data/europarl.en-ca.en",
+    fraction: float = 0.2,
+    max_examples: int | None = None,
+):
+    """
+    Load checkpoint (if ckpt_path is None uses default), take the final `fraction` of the
+    parallel files (src_file / tgt_file) and compute corpus BLEU on model translations.
+    Returns (bleu_score_float, n_examples).
+    """
+    info = load_checkpoint(ckpt_path)
+    model = info["model"]
+    src_vocab = info["src_vocab"]
+    tgt_vocab = info["tgt_vocab"]
+    device = info["device"]
+    MAX_SRC_LEN = info["MAX_SRC_LEN"]
+    MAX_TGT_LEN = info["MAX_TGT_LEN"]
+
+    # Read files
+    try:
+        with open(src_file, "r", encoding="utf-8") as f:
+            src_lines = [l.rstrip("\n") for l in f]
+        with open(tgt_file, "r", encoding="utf-8") as f:
+            tgt_lines = [l.rstrip("\n") for l in f]
+    except FileNotFoundError as e:
+        print("File not found:", e)
+        return None, 0
+
+    if len(src_lines) != len(tgt_lines):
+        print("Warning: source and target have different lengths:", len(src_lines), len(tgt_lines))
+
+    n = min(len(src_lines), len(tgt_lines))
+    start = int(n * (1.0 - fraction))
+    src_test = src_lines[start:n]
+    tgt_test = tgt_lines[start:n]
+
+    if max_examples is not None:
+        src_test = src_test[:max_examples]
+        tgt_test = tgt_test[:max_examples]
+
+    hyps = []
+    for s in tqdm(src_test):
+        hyp = translate(s, model, src_vocab, tgt_vocab, MAX_SRC_LEN, MAX_TGT_LEN, device)
+        hyps.append(hyp)
+
+    # Try sacrebleu first, fallback to NLTK corpus_bleu
+    try:
+
+        bleu = sacrebleu.corpus_bleu(hyps, [tgt_test])
+        print(f"sacreBLEU = {bleu.score:.2f}")
+        return float(bleu.score), len(hyps)
+    except Exception:
+        try:
+
+            # nltk expects: list_of_references: List[List[List[str]]], hypotheses: List[List[str]]
+            list_of_references = [[ref.split()] for ref in tgt_test]
+            hypotheses = [h.split() for h in hyps]
+            score = corpus_bleu(list_of_references, hypotheses) * 100.0
+            print(f"NLTK BLEU = {score:.2f}")
+            return float(score), len(hyps)
+        except Exception as exc:
+            print("Could not compute BLEU: install sacrebleu or nltk:", exc)
+            return None, len(hyps)
+compute_bleu_final_20(fraction=0.1, max_examples=500)

@@ -24,13 +24,13 @@ def normalize(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
-with open("data/europarl.en-ca.ca", encoding="utf-8") as f:
-    DATA_CA = f.readlines()
-with open("data/europarl.en-ca.en", encoding="utf-8") as f:
-    DATA_EN = f.readlines()
+if __name__ == "__main__":
+    with open("data/europarl.en-ca.ca", encoding="utf-8") as f:
+        DATA_CA = f.readlines()
+    with open("data/europarl.en-ca.en", encoding="utf-8") as f:
+        DATA_EN = f.readlines()
 
 #pairs: List[Tuple[str, str]] = []
-if __name__ == "__main__":
     DATA = list(zip(DATA_CA, DATA_EN))
     DATA = DATA[:len(DATA)//2]
     print("Preprocessing...")
